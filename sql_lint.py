@@ -2,6 +2,8 @@ import re
 import streamlit as st
 import pandas as pd
 import sqlparse
+import sqlglot
+from sqlglot.errors import ParseError
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -14,7 +16,7 @@ st.set_page_config(
 )
 
 st.title("🧹 SQL Lint Pro")
-st.caption("Enterprise-grade SQL Linter with Safe Auto-Fixes")
+st.caption("Enterprise-grade SQL Linter with Syntax Validation & Safe Auto-Fixes")
 
 # ---------------- DATA MODELS ----------------
 @dataclass
@@ -28,9 +30,18 @@ class Finding:
 
 SQL_KEYWORDS = {"select","from","where","group","order","limit","join","inner","left","right","on","and","or","insert","into","update","set","delete","create","table"}
 
-def _lines(s: str): return s.splitlines() or [""]
+def _lines(s: str): 
+    return s.splitlines() or [""]
 
-# ---------------- RULES ----------------
+# ---------------- VALIDATION ----------------
+def validate_sql(sql: str, dialect: str = "ansi") -> Optional[str]:
+    try:
+        sqlglot.parse_one(sql, read=dialect)  # parse against dialect
+        return None  # valid
+    except ParseError as e:
+        return str(e)
+
+# ---------------- STYLE RULES ----------------
 def rule_semicolon(sql: str, enabled=True) -> List[Finding]:
     if not enabled: return []
     if not sql.strip(): return []
@@ -79,11 +90,14 @@ with st.sidebar:
     fix_upper = st.checkbox("Uppercase keywords", True)
     fix_semicolon = st.checkbox("Ensure semicolon", True)
 
+    st.header("🗄️ SQL Dialect")
+    dialect = st.selectbox("Validate against dialect", ["ansi", "mysql", "postgres", "tsql"], index=0)
+
 # ---------------- INPUT ----------------
 st.subheader("📥 Input SQL")
 sql_text = st.text_area(
     "Paste your SQL below",
-    value="-- Example\nselect * from users",
+    value="-- Example\nselect * from users;",
     height=200
 )
 
@@ -101,18 +115,24 @@ def lint(sql: str) -> List[Finding]:
 
 col1, col2 = st.columns([1,1])
 with col1:
-    if st.button("🔎 Run Linter"):
-        findings = lint(sql_text)
-        if not findings:
-            st.success("✅ No issues found!")
+    if st.button("🔎 Validate & Lint"):
+        # ✅ 1. Syntax validation
+        error = validate_sql(sql_text, dialect)
+        if error:
+            st.error(f"❌ Invalid SQL ({dialect}): {error}")
         else:
+            st.success(f"✅ SQL syntax is valid ({dialect})")
+
+        # ✅ 2. Style checks
+        findings = lint(sql_text)
+        if not findings and not error:
+            st.success("✨ No lint issues found!")
+        elif findings:
             df = pd.DataFrame([f.__dict__ for f in findings])
             st.dataframe(df, use_container_width=True, hide_index=True)
+
 with col2:
     if st.button("🛠️ Auto-Fix SQL"):
         fixed = auto_fix(sql_text, fix_upper, fix_semicolon)
         st.code(fixed, language="sql")
         st.download_button("⬇️ Download Fixed SQL", fixed, "fixed.sql", "text/sql")
-
-st.markdown("---")
-st.caption("Built with ❤️ on Streamlit. Ready for production use.")
