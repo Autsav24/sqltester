@@ -6,6 +6,7 @@ import sqlglot
 from sqlglot.errors import ParseError
 from dataclasses import dataclass
 from typing import List, Optional
+from difflib import get_close_matches
 
 # ---------------- CONFIG ----------------
 st.set_page_config(
@@ -28,18 +29,23 @@ class Finding:
     col: int
     suggestion: Optional[str] = None
 
-SQL_KEYWORDS = {"select","from","where","group","order","limit","join","inner","left","right","on","and","or","insert","into","update","set","delete","create","table"}
+SQL_KEYWORDS = {
+    "select","from","where","group","order","limit","join","inner","left","right","on",
+    "and","or","insert","into","update","set","delete","create","table"
+}
 
 def _lines(s: str): 
     return s.splitlines() or [""]
 
 # ---------------- VALIDATION ----------------
-def validate_sql(sql: str, dialect: str = "ansi") -> Optional[str]:
+def validate_sql(sql: str, dialect: str = "sqlite") -> Optional[str]:
     try:
-        sqlglot.parse_one(sql, read=dialect)  # parse against dialect
-        return None  # valid
+        sqlglot.parse_one(sql, read=dialect)  # syntax check
+        return None
     except ParseError as e:
         return str(e)
+    except ValueError as ve:  # invalid dialect
+        return f"Unsupported dialect '{dialect}': {ve}"
 
 # ---------------- STYLE RULES ----------------
 def rule_semicolon(sql: str, enabled=True) -> List[Finding]:
@@ -67,6 +73,25 @@ def rule_uppercase_keywords(sql: str, enabled=True) -> List[Finding]:
                 out.append(Finding("L003", f"Keyword '{w}' should be UPPERCASE", "info", i, line.find(w), f"Use '{w.upper()}'"))
     return out
 
+def rule_typo_keywords(sql: str, enabled=True) -> List[Finding]:
+    """
+    Detects words that look like misspelled SQL keywords (e.g., 'joon' instead of 'join').
+    """
+    if not enabled: return []
+    findings = []
+    for i, line in enumerate(_lines(sql), start=1):
+        for w in re.findall(r"[A-Za-z]+", line):
+            low = w.lower()
+            if low not in SQL_KEYWORDS:
+                close = get_close_matches(low, SQL_KEYWORDS, n=1, cutoff=0.8)
+                if close:
+                    findings.append(Finding(
+                        "L004", 
+                        f"Possible typo '{w}' (did you mean '{close[0].upper()}')?", 
+                        "error", i, line.find(w), f"Replace with {close[0].upper()}"
+                    ))
+    return findings
+
 # ---------------- AUTO-FIX ----------------
 def auto_fix(sql: str, upper=True, semicolon=True) -> str:
     formatted = sqlparse.format(
@@ -85,19 +110,22 @@ with st.sidebar:
     r1 = st.checkbox("L001: Require semicolon", True)
     r2 = st.checkbox("L002: Disallow SELECT *", True)
     r3 = st.checkbox("L003: Uppercase keywords", True)
+    r4 = st.checkbox("L004: Detect keyword typos", True)
 
     st.header("🛠️ Auto-Fix Options")
     fix_upper = st.checkbox("Uppercase keywords", True)
     fix_semicolon = st.checkbox("Ensure semicolon", True)
 
     st.header("🗄️ SQL Dialect")
-    dialect = st.selectbox("Validate against dialect", ["ansi", "mysql", "postgres", "tsql"], index=0)
+    dialect = st.selectbox("Validate against dialect", [
+        "sqlite", "mysql", "postgres", "tsql", "snowflake", "bigquery"
+    ], index=0)
 
 # ---------------- INPUT ----------------
 st.subheader("📥 Input SQL")
 sql_text = st.text_area(
     "Paste your SQL below",
-    value="-- Example\nselect * from users;",
+    value="-- Example\nSELECT *\nFROM users joon man\nWHERE man=1;",
     height=200
 )
 
@@ -111,6 +139,7 @@ def lint(sql: str) -> List[Finding]:
     findings += rule_semicolon(sql, r1)
     findings += rule_no_select_star(sql, r2)
     findings += rule_uppercase_keywords(sql, r3)
+    findings += rule_typo_keywords(sql, r4)
     return findings
 
 col1, col2 = st.columns([1,1])
@@ -123,7 +152,7 @@ with col1:
         else:
             st.success(f"✅ SQL syntax is valid ({dialect})")
 
-        # ✅ 2. Style checks
+        # ✅ 2. Style & typo checks
         findings = lint(sql_text)
         if not findings and not error:
             st.success("✨ No lint issues found!")
@@ -136,3 +165,6 @@ with col2:
         fixed = auto_fix(sql_text, fix_upper, fix_semicolon)
         st.code(fixed, language="sql")
         st.download_button("⬇️ Download Fixed SQL", fixed, "fixed.sql", "text/sql")
+
+st.markdown("---")
+st.caption("Built with ❤️ using Streamlit + SQLGlot + SQLParse")
