@@ -1,3 +1,4 @@
 streamlit>=1.38
 pandas
 sqlparse>=0.5.0
+sqlglot>=23.0.0
